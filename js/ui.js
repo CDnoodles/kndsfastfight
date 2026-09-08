@@ -5,6 +5,31 @@ import { ATTR_NAMES, ATTR_LABELS, PROFESSIONS, TALENTS, GROWTH_LEVELS } from './
 const findById = (arr, id) => arr.find(x => x.id === id);
 const findGrowth = val => GROWTH_LEVELS.find(x => x.value === val);
 
+// 生成 Boss 机制说明文字
+function enemyMechanicText(e) {
+    const parts = [];
+    const pv = e.passive;
+    const sp = e.special;
+    if (pv) {
+        switch (pv.type) {
+            case 'regen': parts.push(`每回合恢复 ${Math.round(pv.value * 100)}% HP`); break;
+            case 'defend_bonus':
+                parts.push(`防御时额外减伤 ${Math.round(pv.value * 100)}%`);
+                if (pv.regen) parts.push(`每回合恢复 ${Math.round(pv.regen * 100)}% HP`);
+                break;
+            case 'lifesteal': parts.push(`攻击吸血 ${Math.round(pv.value * 100)}%`); break;
+            case 'slow_debuff': parts.push(`${Math.round(pv.chance * 100)}% 概率降你速度 ${pv.value}（${pv.duration}回合）`); break;
+            case 'cycle_boost': parts.push(`每 3 次攻击强化 +${Math.round(pv.value * 100)}%`); break;
+            case 'crit_chance': parts.push(`物理攻击 ${Math.round(pv.chance * 100)}% 概率暴击×2`); break;
+            case 'mp_regen': parts.push(`每回合恢复 ${pv.value} MP`); break;
+            case 'immunity_cycle': parts.push(`每 ${pv.duration} 回合切换物免/法免`); break;
+        }
+    }
+    if (sp && sp.type === 'two_lives') parts.push(`两条命（复活 ${Math.round(sp.reviveHpRatio * 100)}% HP）`);
+    if (parts.length === 0) return e.intro || '';
+    return '机制：' + parts.join('，');
+}
+
 // ----- 日志 -----
 export function addLog(msg, cls = '') {
     const box = document.getElementById('logBox');
@@ -38,11 +63,11 @@ export function renderAll() {
         const parts = [];
         if (p.profession) {
             const prof = findById(PROFESSIONS, p.profession);
-            if (prof) parts.push(`🎭 ${prof.name}`);
+            if (prof) parts.push(`🎭 ${prof.name}：${prof.passive}`);
         }
         if (p.talent) {
             const t = findById(TALENTS, p.talent);
-            if (t) parts.push(`✨ ${t.name}`);
+            if (t) parts.push(`✨ ${t.name}：${t.desc}`);
         }
         if (p.growth) {
             const g = findGrowth(p.growth.value) || p.growth;
@@ -85,8 +110,14 @@ export function renderAll() {
             if (e.aiState.immunityType === 'physical') statusParts.push('🌀 物理免疫');
             if (e.aiState.immunityType === 'magic') statusParts.push('🌀 法术免疫');
             if (e.aiState.reviveUsed) statusParts.push('🔥 已复活一次');
+            // 龙领主：显示强化进度
+            if (e.passive && e.passive.type === 'cycle_boost') statusParts.push(`⚡ 强化进度 ${e.aiState.cycleCount || 0}/3`);
         }
         document.getElementById('enemyStatus').innerText = statusParts.join(' ');
+
+        // 机制说明栏
+        const infoEl = document.getElementById('enemyInfo');
+        if (infoEl) infoEl.innerText = enemyMechanicText(e);
 
         // 渲染敌人属性网格（新增）
         const enemyGrid = document.getElementById('enemyStatGrid');

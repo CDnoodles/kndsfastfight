@@ -310,7 +310,7 @@ export const PROFESSIONS = [
         name: '✨ 牧师',
         desc: '圣光之力，持久续航。',
         mods: { matk: 0.2, mpRegen: 0.2, maxMp: 0.15 },
-        passive: '每回合恢复 3 MP，法术消耗 -3'
+        passive: '每回合恢复 6% 最大HP 与 3 MP，法术消耗 -3'
     }
 ];
 

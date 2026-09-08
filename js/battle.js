@@ -93,8 +93,10 @@ function applyRegeneration() {
         const heal = Math.max(2, Math.floor(p.base.maxHp * 0.02));
         p.current.hp = Math.min(p.base.maxHp, p.current.hp + heal);
     }
-    // 牧师被动：每回合恢复 3 MP
+    // 牧师被动：每回合恢复 6% 最大HP 与 3 MP
     if (p.profession === 'priest') {
+        const heal = Math.max(1, Math.floor(p.base.maxHp * 0.06));
+        p.current.hp = Math.min(p.base.maxHp, p.current.hp + heal);
         p.current.mp = Math.min(p.base.maxMp, p.current.mp + 3);
     }
     // 再生天赋：每回合恢复 5% 最大HP
@@ -244,6 +246,7 @@ export function startBossFight(bossTemplate) {
     }
     const enemy = {
         name: bossTemplate.name,
+        intro: bossTemplate.intro,
         base: bossBase,
         current: { hp: bossBase.maxHp, mp: 50, progress: 0 },
         alive: true,
