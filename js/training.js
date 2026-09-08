@@ -14,8 +14,15 @@ export function generateDailyTraining() {
     currentTrainingAttr = pick(ATTR_NAMES);
     const label = ATTR_LABELS[currentTrainingAttr] || currentTrainingAttr;
     const range = GROWTH_RANGES[currentTrainingAttr] || [0, 0];
+    // 成长值系数（与 doTraining 保持一致）
+    const growth = (G.player.growth && G.player.growth.value) || 1;
+    const fmt = v => {
+        v *= growth;
+        const isInt = currentTrainingAttr === 'maxHp' || currentTrainingAttr === 'maxMp' || currentTrainingAttr === 'atk' || currentTrainingAttr === 'matk';
+        return isInt ? Math.max(1, Math.round(v)) : Math.max(0.1, Math.round(v * 10) / 10);
+    };
     if (G.phase === 'training') {
-        document.getElementById('extraInfo').innerText = `📈 今日训练：${label}  (预计 +${range[0].toFixed(1)}~${range[1].toFixed(1)})`;
+        document.getElementById('extraInfo').innerText = `📈 今日训练：${label}  (预计 +${fmt(range[0])}~${fmt(range[1])})`;
     }
     // 渲染训练按钮
     renderTrainingButtons();
@@ -38,10 +45,13 @@ export function doTraining() {
     if (G.phase !== 'training' || G.day > 30) return;
     const attr = currentTrainingAttr;
     const range = GROWTH_RANGES[attr] || [0, 0];
+    // 成长值系数：放大学到的属性（未创建角色时默认 1）
+    const growth = (G.player.growth && G.player.growth.value) || 1;
     let gain = Math.random() * (range[1] - range[0]) + range[0];
-    if (attr === 'maxHp' || attr === 'maxMp') gain = Math.round(gain);
-    else if (attr === 'speed' || attr === 'mpRegen' || attr === 'def') gain = Math.round(gain * 10) / 10;
-    else gain = Math.round(gain);
+    gain *= growth;
+    // 整数属性取整，小数属性保留1位（整数属性至少 +1，避免低成长值白训练一天）
+    if (attr === 'maxHp' || attr === 'maxMp' || attr === 'atk' || attr === 'matk') gain = Math.max(1, Math.round(gain));
+    else gain = Math.max(0.1, Math.round(gain * 10) / 10);
 
     const old = G.player.base[attr];
     G.player.base[attr] += gain;

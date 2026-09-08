@@ -13,6 +13,167 @@ export function calcDamage(attack, defense) {
     return Math.max(1, Math.floor(base * variance));
 }
 
+// ----- 玩家进攻增益（职业 + 天赋），返回整数伤害 -----
+function applyOffensiveBuffs(damage, type) {
+    const p = G.player;
+    // 嗜血天赋：每损失 10% 血量，+5% 伤害
+    if (p.talent === 'bloodthirsty') {
+        const lostPercent = 1 - p.current.hp / p.base.maxHp;
+        const bonus = Math.floor(lostPercent / 0.1) * 0.05;
+        damage *= (1 + bonus);
+    }
+    // 愈战愈勇天赋：每层 +5% 伤害
+    if (p.talent === 'escalation') {
+        const stacks = p.combatBuffs.escalationStacks || 0;
+        damage *= (1 + stacks * 0.05);
+    }
+    // 法师被动：法术伤害额外 +20%
+    if (p.profession === 'mage' && type === 'magic') {
+        damage *= 1.2;
+    }
+    // 刺客被动：物理攻击 20% 暴击（200% 伤害）
+    if (p.profession === 'assassin' && type === 'physical') {
+        if (Math.random() < 0.2) {
+            damage *= 2;
+            addLog('💥 暴击！造成双倍伤害！', 'highlight');
+        }
+    }
+    return Math.max(1, Math.floor(damage));
+}
+
+// ----- 玩家受击减益（职业 + 天赋），返回最终应扣 HP -----
+// 若战斗因反击击杀 Boss 而结束，返回 null（调用方需中止）
+function applyDefensiveBuffs(damage) {
+    const p = G.player;
+    let d = Math.max(0, damage);
+
+    // 骑士被动：30% 格挡减伤 50%
+    if (p.profession === 'knight' && Math.random() < 0.3) {
+        d = Math.floor(d * 0.5);
+        addLog('🛡️ 骑士格挡！减免50%伤害', 'heal');
+    }
+    // 魔法护盾天赋：至多抵消本次伤害的 20%，消耗等量 MP（1 MP 抵 1 点，蓝不够则只抵消能付起的部分）
+    if (p.talent === 'magic_shield' && p.current.mp > 0) {
+        const absorb = Math.min(p.current.mp, Math.floor(d * 0.2));
+        p.current.mp -= absorb;
+        d -= absorb;
+        if (absorb > 0) addLog(`💧 魔法护盾抵消 ${absorb} 点伤害(20%)`, 'heal');
+    }
+    // 反击天赋：受击 25% 概率反击 50% 物理伤害
+    if (p.talent === 'counter' && G.enemy && G.enemy.alive && Math.random() < 0.25) {
+        const counterDmg = Math.max(1, Math.floor(p.base.atk * 0.5));
+        G.enemy.current.hp -= counterDmg;
+        addLog(`⚡ 反击造成 ${counterDmg} 点伤害`, 'damage');
+        if (G.enemy.current.hp <= 0) {
+            G.enemy.current.hp = 0;
+            G.enemy.alive = false;
+            addLog(`💀 ${G.enemy.name} 被反击击杀！`, 'highlight');
+            G.inAction = false;
+            G.waitingForPlayer = false;
+            endBossVictory();
+            return null;
+        }
+    }
+    // 不屈意志天赋：首次致命伤害保留 1 HP
+    if (p.talent === 'unyielding' && !p.talentFlags.unyieldingUsed) {
+        if (p.current.hp - d <= 0) {
+            p.talentFlags.unyieldingUsed = true;
+            d = p.current.hp - 1;
+            addLog('🛡️ 不屈意志触发！保留1HP', 'heal');
+        }
+    }
+    return Math.max(0, d);
+}
+
+// ----- 回合被动恢复（行动后调用） -----
+function applyRegeneration() {
+    const p = G.player;
+    // 战士被动：每回合恢复 2% 最大HP（至少2点）
+    if (p.profession === 'warrior') {
+        const heal = Math.max(2, Math.floor(p.base.maxHp * 0.02));
+        p.current.hp = Math.min(p.base.maxHp, p.current.hp + heal);
+    }
+    // 牧师被动：每回合恢复 3 MP
+    if (p.profession === 'priest') {
+        p.current.mp = Math.min(p.base.maxMp, p.current.mp + 3);
+    }
+    // 再生天赋：每回合恢复 5% 最大HP
+    if (p.talent === 'regeneration') {
+        const heal = Math.max(1, Math.floor(p.base.maxHp * 0.05));
+        p.current.hp = Math.min(p.base.maxHp, p.current.hp + heal);
+    }
+}
+
+// ----- 玩家当前速度（含减速 debuff） -----
+function playerSpeed() {
+    const p = G.player;
+    let s = p.base.speed;
+    if (p.buffs) {
+        for (const b of p.buffs) {
+            if (b.type === 'speed_reduce') s -= b.value;
+        }
+    }
+    return Math.max(1, s);
+}
+
+// ----- 敌人每回合被动（回血 / MP恢复 / 免疫切换等） -----
+function applyEnemyPassive(enemy) {
+    const pv = enemy.passive;
+    const st = enemy.aiState;
+    if (!pv) return;
+    switch (pv.type) {
+        case 'regen': {
+            const heal = Math.max(1, Math.floor(enemy.base.maxHp * pv.value));
+            enemy.current.hp = Math.min(enemy.base.maxHp, enemy.current.hp + heal);
+            if (heal > 0) addLog(`🌿 ${enemy.name} 恢复了 ${heal} 点生命`, 'heal');
+            break;
+        }
+        case 'defend_bonus': {
+            // 泰坦额外附带每回合回血
+            if (pv.regen) {
+                const heal = Math.max(1, Math.floor(enemy.base.maxHp * pv.regen));
+                enemy.current.hp = Math.min(enemy.base.maxHp, enemy.current.hp + heal);
+                if (heal > 0) addLog(`🌋 ${enemy.name} 恢复了 ${heal} 点生命`, 'heal');
+            }
+            break;
+        }
+        case 'mp_regen': {
+            enemy.current.mp = Math.min(50, (enemy.current.mp || 0) + pv.value);
+            break;
+        }
+        case 'immunity_cycle': {
+            st.cycleCount = (st.cycleCount || 0) + 1;
+            if (st.cycleCount >= pv.duration) {
+                st.cycleCount = 0;
+                if (st.immunityType === 'physical') {
+                    st.immunityType = 'magic';
+                    addLog('🌀 虚空实体切换到【法术免疫】！', 'highlight');
+                } else {
+                    st.immunityType = 'physical';
+                    addLog('🌀 虚空实体切换到【物理免疫】！', 'highlight');
+                }
+            }
+            break;
+        }
+    }
+}
+
+// ----- 玩家减速 debuff 回合递减（每次玩家行动后触发） -----
+function tickPlayerDebuffs() {
+    const p = G.player;
+    if (!p.buffs || p.buffs.length === 0) return;
+    p.buffs = p.buffs.filter(b => {
+        if (b.type === 'speed_reduce') {
+            b.duration -= 1;
+            if (b.duration <= 0) {
+                addLog('💨 你的速度恢复了', 'heal');
+                return false;
+            }
+        }
+        return true;
+    });
+}
+
 // ----- 战斗循环变量 -----
 let lastTimestamp = 0;
 let battleLoopId = null;
@@ -86,7 +247,15 @@ export function startBossFight(bossTemplate) {
         base: bossBase,
         current: { hp: bossBase.maxHp, mp: 50, progress: 0 },
         alive: true,
-        isDefending: false
+        isDefending: false,
+        ai: bossTemplate.ai,
+        passive: bossTemplate.passive || null,
+        special: bossTemplate.special || null,
+        aiState: {
+            cycleCount: 0,      // 龙领主(cycle_boost) / 虚空实体(immunity_cycle) 计数
+            immunityType: null, // 'physical' | 'magic' | null
+            reviveUsed: false   // 奇美拉(two_lives)
+        }
     };
     G.enemy = enemy;
 
@@ -96,6 +265,9 @@ export function startBossFight(bossTemplate) {
     G.player.current.progress = 0;
     G.player.alive = true;
     G.player.isDefending = false;
+    // 每场战斗重置叠层（愈战愈勇）与临时 debuff
+    G.player.combatBuffs.escalationStacks = 0;
+    G.player.buffs = [];
 
     document.getElementById('enemyPanel').style.display = 'block';
     document.getElementById('enemyName').innerText = enemy.name;
@@ -114,6 +286,22 @@ export function startBossFight(bossTemplate) {
 
 // ----- Boss胜利（标记阶段） -----
 function endBossVictory() {
+    // 奇美拉：两条命，首次倒地后以弱化姿态复活一次
+    const enemy = G.enemy;
+    if (enemy && enemy.special && enemy.special.type === 'two_lives' && !enemy.aiState.reviveUsed) {
+        enemy.aiState.reviveUsed = true;
+        const reviveHp = Math.max(1, Math.floor(enemy.base.maxHp * enemy.special.reviveHpRatio));
+        enemy.current.hp = reviveHp;
+        enemy.alive = true;
+        enemy.current.progress = 0;
+        enemy.isDefending = false;
+        G.inAction = false;
+        G.waitingForPlayer = false;
+        addLog(`🔥 奇美拉复活了！以 ${reviveHp} 点生命卷土重来！`, 'highlight');
+        renderAll();
+        return;
+    }
+
     G.battleActive = false;
     G.waitingForPlayer = false;
     G.inAction = false;
@@ -181,7 +369,7 @@ function battleTick(timestamp) {
     lastTimestamp = timestamp;
 
     if (!G.inAction && !G.waitingForPlayer && G.player.alive && G.enemy && G.enemy.alive) {
-        G.player.current.progress += G.player.base.speed * delta * 10;
+        G.player.current.progress += playerSpeed() * delta * 10;
         G.enemy.current.progress += G.enemy.base.speed * delta * 10;
 
         if (G.player.current.progress >= 100) {
@@ -207,7 +395,9 @@ export function playerAction(type) {
     if (G.inAction || !G.waitingForPlayer) return;
     if (!G.player.alive || !G.enemy || !G.enemy.alive) return;
 
-    if (type === 'magic' && G.player.current.mp < 15) {
+    // 牧师被动：法术消耗 -3（最低3点）
+    const magicCost = G.player.profession === 'priest' ? Math.max(3, 15 - 3) : 15;
+    if (type === 'magic' && G.player.current.mp < magicCost) {
         addLog('❌ 法力不足！', 'damage');
         return;
     }
@@ -220,14 +410,16 @@ export function playerAction(type) {
 
     if (type === 'physical') {
         damage = calcDamage(G.player.base.atk, enemy.base.def);
+        damage = applyOffensiveBuffs(damage, 'physical');
         G.player.isDefending = false;
         addLog(`⚔️ 物理攻击，造成 ${damage} 点伤害`, 'damage');
     } else if (type === 'magic') {
-        G.player.current.mp -= 15;
+        G.player.current.mp -= magicCost;
         // 法术无视防御
         const baseMagicDamage = G.player.base.matk * 1.2;
         const variance = 0.9 + Math.random() * 0.2;
         damage = Math.max(1, Math.floor(baseMagicDamage * variance));
+        damage = applyOffensiveBuffs(damage, 'magic');
         G.player.isDefending = false;
         addLog(`🔮 法术攻击，造成 ${damage} 点伤害`, 'damage');
     } else if (type === 'defend') {
@@ -235,14 +427,35 @@ export function playerAction(type) {
         addLog('🛡️ 进入防御姿态', 'heal');
     }
 
+    // 虚空实体：免疫对应类型的伤害
+    if (damage > 0 && enemy.aiState && enemy.aiState.immunityType) {
+        const imm = enemy.aiState.immunityType;
+        if ((imm === 'physical' && type === 'physical') || (imm === 'magic' && type === 'magic')) {
+            damage = 0;
+            addLog(`🌀 虚空实体免疫了你的${type === 'physical' ? '物理' : '法术'}攻击！`, 'heal');
+        }
+    }
+
     if (damage > 0 && enemy.isDefending) {
         damage = Math.floor(damage * 0.4);
-        addLog('🛡️ 敌人防御姿态减免伤害！', 'heal');
+        // 石傀儡 / 泰坦：防御时额外减伤
+        const pv = enemy.passive;
+        if (pv && pv.type === 'defend_bonus') {
+            damage = Math.floor(damage * (1 - pv.value));
+            addLog(`🛡️ ${enemy.name} 防御强化，伤害进一步被削减！`, 'heal');
+        } else {
+            addLog('🛡️ 敌人防御姿态减免伤害！', 'heal');
+        }
     }
 
     if (damage > 0) {
         const actual = Math.max(1, Math.floor(damage));
         enemy.current.hp -= actual;
+        // 愈战愈勇：攻击命中叠层（最多5层）
+        if (G.player.talent === 'escalation') {
+            G.player.combatBuffs.escalationStacks = Math.min(5, (G.player.combatBuffs.escalationStacks || 0) + 1);
+            addLog(`🔥 愈战愈勇叠层 ${G.player.combatBuffs.escalationStacks}/5`, 'highlight');
+        }
         if (enemy.current.hp <= 0) {
             enemy.current.hp = 0;
             enemy.alive = false;
@@ -255,6 +468,10 @@ export function playerAction(type) {
 
     // 恢复MP
     G.player.current.mp = Math.min(G.player.base.maxMp, G.player.current.mp + G.player.base.mpRegen);
+    // 回合被动恢复
+    applyRegeneration();
+    // 减速 debuff 回合递减
+    tickPlayerDebuffs();
 
     G.inAction = false;
     renderAll();
@@ -265,6 +482,8 @@ export function playerAction(type) {
 }
 
 // ----- 敌人AI行动 -----
+// 依据 Boss 的 ai 权重（attack/magic/defend）随机选择行动；未配置时使用默认值。
+// 同时按 passive/special 触发各自的特殊机制。
 function enemyAction() {
     if (G.inAction) return;
     if (!G.enemy || !G.enemy.alive) return;
@@ -272,26 +491,31 @@ function enemyAction() {
     G.inAction = true;
     const enemy = G.enemy;
     const player = G.player;
+    const pv = enemy.passive;
+    const st = enemy.aiState;
     enemy.current.progress = 0;
 
-    let action = 'attack';
-    if (enemy.current.hp < enemy.base.maxHp * 0.2 && Math.random() < 0.4) {
-        action = 'defend';
-    } else if (Math.random() < 0.15 && player.current.hp < player.base.maxHp * 0.3) {
-        action = 'magic';
+    // ----- 每回合被动（回血 / MP恢复 / 免疫切换等） -----
+    applyEnemyPassive(enemy);
+
+    // ----- 根据AI权重选择行动 -----
+    const ai = enemy.ai || { attack: 0.6, magic: 0.2, defend: 0.2 }; // 默认值
+    const wAtk = Math.max(0, ai.attack || 0);
+    const wMag = Math.max(0, ai.magic || 0);
+    const wDef = Math.max(0, ai.defend || 0);
+    const total = wAtk + wMag + wDef;
+
+    let action, attackType = 'physical';
+    if (total <= 0) {
+        action = 'attack'; // 三项权重全为0时，兜底为物理攻击
+    } else {
+        const roll = Math.random() * total;
+        if (roll < wAtk) action = 'attack';
+        else if (roll < wAtk + wMag) { action = 'attack'; attackType = 'magic'; }
+        else action = 'defend';
     }
 
-    let damage = 0;
-    if (action === 'attack') {
-        damage = calcDamage(enemy.base.atk, player.base.def);
-        addLog(`👹 ${enemy.name} 物理攻击，造成 ${damage} 点伤害`, 'damage');
-    } else if (action === 'magic') {
-        // 法术无视防御
-        const baseMagicDamage = enemy.base.matk * 1.3;
-        const variance = 0.9 + Math.random() * 0.2;
-        damage = Math.max(1, Math.floor(baseMagicDamage * variance));
-        addLog(`👹 ${enemy.name} 释放法术，造成 ${damage} 点伤害`, 'damage');
-    } else {
+    if (action === 'defend') {
         enemy.isDefending = true;
         addLog(`🛡️ ${enemy.name} 防御`, 'heal');
         G.inAction = false;
@@ -300,13 +524,61 @@ function enemyAction() {
         return;
     }
 
+    // ----- 计算伤害 -----
+    // 龙领主：每 3 次攻击强化一次 +30%
+    let boost = 1;
+    if (pv && pv.type === 'cycle_boost') {
+        st.cycleCount = (st.cycleCount || 0) + 1;
+        if (st.cycleCount >= 3) {
+            boost = 1 + pv.value;
+            st.cycleCount = 0;
+            addLog(`🐉 龙领主力量涌动！本次攻击 +${Math.round(pv.value * 100)}%`, 'highlight');
+        }
+    }
+
+    let damage = 0;
+    if (attackType === 'physical') {
+        damage = calcDamage(enemy.base.atk * boost, player.base.def);
+        // 恶魔霸主：物理攻击 20% 概率暴击
+        if (pv && pv.type === 'crit_chance' && Math.random() < pv.chance) {
+            damage *= 2;
+            addLog(`💥 ${enemy.name} 暴击！`, 'damage');
+        }
+        addLog(`👹 ${enemy.name} 物理攻击，造成 ${damage} 点伤害`, 'damage');
+    } else {
+        // 法术无视防御
+        const baseMagicDamage = enemy.base.matk * 1.3 * boost;
+        const variance = 0.9 + Math.random() * 0.2;
+        damage = Math.max(1, Math.floor(baseMagicDamage * variance));
+        addLog(`👹 ${enemy.name} 释放法术，造成 ${damage} 点伤害`, 'damage');
+    }
+
     if (damage > 0) {
         let actual = Math.max(1, Math.floor(damage));
         if (player.isDefending) {
             actual = Math.floor(actual * 0.4);
             addLog(`🛡️ 防御姿态减免伤害！`, 'heal');
         }
+        // 职业/天赋受击减益（骑士格挡、魔法护盾、反击、不屈意志）
+        actual = applyDefensiveBuffs(actual);
+        if (actual === null) {
+            return; // 反击击杀了 Boss，战斗已由 endBossVictory 收尾
+        }
         player.current.hp -= actual;
+
+        // 冰霜幽灵：攻击命中时概率降速
+        if (pv && pv.type === 'slow_debuff' && actual > 0 && Math.random() < pv.chance) {
+            player.buffs = player.buffs || [];
+            player.buffs.push({ type: 'speed_reduce', value: pv.value, duration: pv.duration });
+            addLog(`❄️ 冰霜幽灵降低了你的速度（-${pv.value}，持续${pv.duration}回合）`, 'damage');
+        }
+        // 吸血鬼：攻击吸血
+        if (pv && pv.type === 'lifesteal' && actual > 0) {
+            const heal = Math.max(1, Math.floor(actual * pv.value));
+            enemy.current.hp = Math.min(enemy.base.maxHp, enemy.current.hp + heal);
+            addLog(`🧛 吸血鬼吸取了 ${heal} 点生命`, 'heal');
+        }
+
         if (player.current.hp <= 0) {
             player.current.hp = 0;
             player.alive = false;
@@ -320,6 +592,8 @@ function enemyAction() {
 
     enemy.isDefending = false;
     enemy.current.mp = Math.min(50, (enemy.current.mp || 0) + 1);
+    // 回合被动恢复
+    applyRegeneration();
 
     G.inAction = false;
     G.waitingForPlayer = false;

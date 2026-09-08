@@ -33,7 +33,16 @@ export function initGameState() {
             current: { hp: base.maxHp, mp: base.maxMp, progress: 0 },
             buffs: [],
             isDefending: false,
-            alive: true
+            alive: true,
+            profession: null,        // 职业ID
+            talent: null,            // 天赋ID
+            growth: null,            // 成长值档位 { value, label, desc }
+            talentFlags: {           // 一次性触发的记录
+                unyieldingUsed: false
+            },
+            combatBuffs: {           // 战斗中产生的临时状态
+                escalationStacks: 0
+            }
         },
         enemy: null,
         bossDefeated: [false, false, false],

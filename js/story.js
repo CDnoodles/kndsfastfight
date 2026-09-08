@@ -48,9 +48,10 @@ export function showBossSelection(stageIndex) {
             <div class="story-choices">
     `;
     candidates.forEach((boss, idx) => {
-        // 简要显示属性
+        // 一句话介绍 + 简要属性
+        const intro = boss.intro ? `<span style="font-weight:normal;font-size:12px;opacity:0.9;color:#ffe08a;">${boss.intro}</span><br>` : '';
         const stats = `HP ${boss.base.maxHp} | 物攻 ${boss.base.atk} | 法攻 ${boss.base.matk} | 防御 ${boss.base.def}`;
-        html += `<button class="btn primary" data-boss-idx="${idx}">${boss.name}<br><span style="font-weight:normal;font-size:12px;opacity:0.8;">${stats}</span></button>`;
+        html += `<button class="btn primary" data-boss-idx="${idx}">${boss.name}<br>${intro}<span style="font-weight:normal;font-size:12px;opacity:0.75;">${stats}</span></button>`;
     });
     html += `</div></div>`;
     renderDynamicArea(html);
@@ -69,49 +70,78 @@ export function showBossSelection(stageIndex) {
     });
 }
 
-// 触发剧情事件（随机抽取，玩家不选择，效果直接生效）
+// 触发剧情事件（从池中随机抽取一个事件，两个极端选项 + 放弃）
 export function triggerStory(stageIndex) {
     const pool = STORY_POOLS[stageIndex];
     const event = pick(pool);
 
     G.phase = 'story';
-    // 立即生效（玩家不选择）
-    event.effect(G);
-    addLog(`📖 事件：${event.title} → ${event.reward}`, 'highlight');
-
     document.getElementById('btnPhysical').disabled = true;
     document.getElementById('btnMagic').disabled = true;
     document.getElementById('btnDefend').disabled = true;
     renderAll();
 
-    const html = `
+    let html = `
         <div class="panel" style="border-color:#f1c40f;">
             <h3 style="margin:0 0 8px; color:#f1c40f;">📖 ${event.title}</h3>
             <p style="margin:4px 0 12px; opacity:0.9;">${event.desc}</p>
-            <p style="margin:4px 0 16px; color:#2ecc71; font-weight:600;">获得：${event.reward}</p>
-            <button class="btn primary" id="btnStoryContinue">继续 ➜</button>
-        </div>
+            <div class="story-choices">
     `;
+    event.choices.forEach((c, idx) => {
+        html += `<button class="btn primary" data-story-idx="${idx}">${c.label}<br><span style="font-weight:normal;font-size:12px;opacity:0.8;">${c.desc}</span></button>`;
+    });
+    // 第三个选项：放弃该事件
+    html += `<button class="btn" data-story-idx="2" style="background:#444;">🚪 放弃该事件<br><span style="font-weight:normal;font-size:12px;opacity:0.8;">不承担任何风险</span></button>`;
+    html += `</div></div>`;
     renderDynamicArea(html);
 
-    document.getElementById('btnStoryContinue').addEventListener('click', () => {
-        clearDynamicArea();
-        G.day++;
-        if (G.day > 30) {
-            // 如果超过30天，检查是否还有Boss未打，若有则强制触发最终Boss（阶段2）
-            if (!G.bossDefeated[2]) {
-                showBossSelection(2);
+    document.querySelectorAll('[data-story-idx]').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const idx = parseInt(e.currentTarget.dataset.storyIdx);
+            if (idx < 2) {
+                // 应用极端选项（增益 + 减益）
+                const choice = event.choices[idx];
+                const beforeMaxHp = G.player.base.maxHp;
+                const beforeMaxMp = G.player.base.maxMp;
+                choice.effect(G);
+                // 若上限提升，同步补充当前值
+                if (G.player.base.maxHp > beforeMaxHp) G.player.current.hp += G.player.base.maxHp - beforeMaxHp;
+                if (G.player.base.maxMp > beforeMaxMp) G.player.current.mp += G.player.base.maxMp - beforeMaxMp;
+                // 属性保底，避免减益把属性减成负数
+                const b = G.player.base;
+                b.atk = Math.max(1, b.atk);
+                b.matk = Math.max(1, b.matk);
+                b.def = Math.max(0, b.def);
+                b.speed = Math.max(1, b.speed);
+                b.maxHp = Math.max(20, b.maxHp);
+                b.maxMp = Math.max(10, b.maxMp);
+                b.mpRegen = Math.max(0.5, b.mpRegen);
+                // HP/MP 修正到合法区间
+                G.player.current.hp = Math.max(1, Math.min(G.player.current.hp, b.maxHp));
+                G.player.current.mp = Math.max(0, Math.min(G.player.current.mp, b.maxMp));
+                addLog(`📖 剧情选择：${choice.label} → ${choice.desc}`, 'highlight');
             } else {
-                endGame(true);
+                addLog('📖 你选择放弃该事件，保持现状。', 'highlight');
             }
-            return;
-        }
-        checkDayEvents();
-        renderAll();
-        if (G.phase === 'training') {
-            import('./training.js').then(module => {
-                module.generateDailyTraining();
-            });
-        }
+
+            clearDynamicArea();
+            G.day++;
+            if (G.day > 30) {
+                // 如果超过30天，检查是否还有Boss未打，若有则强制触发最终Boss（阶段2）
+                if (!G.bossDefeated[2]) {
+                    showBossSelection(2);
+                } else {
+                    endGame(true);
+                }
+                return;
+            }
+            checkDayEvents();
+            renderAll();
+            if (G.phase === 'training') {
+                import('./training.js').then(module => {
+                    module.generateDailyTraining();
+                });
+            }
+        });
     });
 }

@@ -1,5 +1,9 @@
 import { G } from './gameState.js';
-import { ATTR_NAMES, ATTR_LABELS } from './config.js';
+import { ATTR_NAMES, ATTR_LABELS, PROFESSIONS, TALENTS, GROWTH_LEVELS } from './config.js';
+
+// 通过 id 查找职业 / 天赋 / 成长档位
+const findById = (arr, id) => arr.find(x => x.id === id);
+const findGrowth = val => GROWTH_LEVELS.find(x => x.value === val);
 
 // ----- 日志 -----
 export function addLog(msg, cls = '') {
@@ -20,12 +24,32 @@ export function renderAll() {
 
     document.getElementById('dayDisplay').innerText = `第 ${G.day} 天`;
     const phaseLabels = {
+        characterCreation: '🎭 创建角色',
         training: '🏋️ 训练',
         story: '📖 剧情',
         boss: '⚔️ 战斗',
         settlement: '🏁 结算'
     };
     document.getElementById('phaseLabel').innerText = phaseLabels[G.phase] || G.phase;
+
+    // 职业 / 天赋 / 成长值展示
+    const charInfo = document.getElementById('charInfo');
+    if (charInfo) {
+        const parts = [];
+        if (p.profession) {
+            const prof = findById(PROFESSIONS, p.profession);
+            if (prof) parts.push(`🎭 ${prof.name}`);
+        }
+        if (p.talent) {
+            const t = findById(TALENTS, p.talent);
+            if (t) parts.push(`✨ ${t.name}`);
+        }
+        if (p.growth) {
+            const g = findGrowth(p.growth.value) || p.growth;
+            parts.push(`🌱 成长 x${g.value} · ${g.label}`);
+        }
+        charInfo.innerHTML = parts.join('　');
+    }
 
     // 玩家HP/MP
     document.getElementById('hpText').innerHTML = `❤️ ${Math.floor(cur.hp)}/${base.maxHp}`;
@@ -55,7 +79,14 @@ export function renderAll() {
         document.getElementById('enemyHpBar').style.width = (e.current.hp / e.base.maxHp * 100) + '%';
         document.getElementById('enemyProgressBar').style.width = (e.current.progress || 0) + '%';
         document.getElementById('enemyProgressLabel').innerText = `⏳ ${Math.floor(e.current.progress || 0)}%`;
-        document.getElementById('enemyStatus').innerText = e.isDefending ? '🛡️ 防御中' : '';
+        const statusParts = [];
+        if (e.isDefending) statusParts.push('🛡️ 防御中');
+        if (e.aiState) {
+            if (e.aiState.immunityType === 'physical') statusParts.push('🌀 物理免疫');
+            if (e.aiState.immunityType === 'magic') statusParts.push('🌀 法术免疫');
+            if (e.aiState.reviveUsed) statusParts.push('🔥 已复活一次');
+        }
+        document.getElementById('enemyStatus').innerText = statusParts.join(' ');
 
         // 渲染敌人属性网格（新增）
         const enemyGrid = document.getElementById('enemyStatGrid');
@@ -87,7 +118,8 @@ export function renderAll() {
     document.getElementById('btnPhysical').disabled = !canAct;
     document.getElementById('btnMagic').disabled = !canAct;
     document.getElementById('btnDefend').disabled = !canAct;
-    document.getElementById('extraInfo').innerHTML = G.phase === 'boss' ? `🔮 法术消耗 15 MP (当前${Math.floor(G.player.current.mp)})` : '';
+    const magicCost = p.profession === 'priest' ? 12 : 15;
+    document.getElementById('extraInfo').innerHTML = G.phase === 'boss' ? `🔮 法术消耗 ${magicCost} MP (当前${Math.floor(p.current.mp)})` : '';
 }
 
 // 动态区域渲染（用于训练/剧情/结算）
