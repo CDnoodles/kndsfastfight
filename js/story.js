@@ -1,11 +1,44 @@
 import { G } from './gameState.js';
-import { STORY_POOLS, BOSS_POOLS } from './config.js';
-import { addLog, renderAll, renderDynamicArea, clearDynamicArea } from './ui.js';
-import { startBossFight, endGame } from './battle.js';
+import { STORY_POOLS, BOSS_POOLS, getDifficulty } from './config.js';
+import { addLog, renderAll, renderDynamicArea, clearDynamicArea, fmt } from './ui.js';
+import { startBossFight } from './battle.js';
 
 // 工具：随机选取
 const pick = arr => arr[Math.floor(Math.random() * arr.length)];
 const shuffle = arr => arr.sort(() => Math.random() - 0.5);
+
+// ----- 周目缩放（指数增长：Boss 属性按 K^w 缩放，与玩家训练/事件的复利对齐） -----
+function weekScale(week) {
+    const w = week - 1;
+    const K = 1.18;   // 每周约 +18%，根据玩家总增长率调参
+    const factor = Math.pow(K, w);
+    return {
+        maxHp: factor,
+        atk:   factor,
+        matk:  factor,
+        def:   factor,
+        speed: 1 + 0.05 * w     // 速度保持线性，避免先手混乱
+    };
+}
+
+// 按当前周目缩放 Boss 属性；速度封顶为玩家当前速度的 1.5 倍，避免永远后手
+// 再叠加难度倍率（法攻与物攻共用 atkMult，速度不受难度影响）
+function scaleBossForWeek(template) {
+    const s = weekScale(G.week);
+    const d = getDifficulty(G.difficulty);
+    const b = template.base;
+    const speedCap = G.player.base.speed * 1.5;
+    return {
+        ...template,
+        base: {
+            maxHp: Math.round(b.maxHp * s.maxHp * d.hpMult),
+            atk:   Math.round(b.atk   * s.atk   * d.atkMult),
+            matk:  Math.round(b.matk  * s.matk  * d.atkMult),
+            def:   Math.round(b.def   * s.def   * d.defMult),
+            speed: Math.round(Math.min(b.speed * s.speed, speedCap) * 10) / 10
+        }
+    };
+}
 
 // 检查当天是否触发事件（Boss或剧情）
 export function checkDayEvents() {
@@ -37,20 +70,27 @@ export function showBossSelection(stageIndex) {
     document.getElementById('btnDefend').disabled = true;
 
     const pool = BOSS_POOLS[stageIndex];
-    // 从池中随机取3个（如果池子大于3，打乱后取前3；否则取全部）
+    // 从池中随机取3个（如果池子大于3，打乱后取前3；否则取全部），并按周目缩放
     const shuffled = shuffle([...pool]);
-    const candidates = shuffled.slice(0, 3);
+    const candidates = shuffled.slice(0, 3).map(scaleBossForWeek);
+
+    // 血量是全局资源，低血进 Boss 有被击杀风险，给出提示
+    const hpPct = G.player.current.hp / G.player.base.maxHp;
+    const lowHpWarn = hpPct < 0.5
+        ? `<p style="margin:4px 0 12px; color:#e74c3c; font-weight:700;">⚠️ 当前生命仅剩 ${Math.round(hpPct * 100)}%（${fmt(Math.floor(G.player.current.hp))}/${fmt(G.player.base.maxHp)}），此战风险极高！</p>`
+        : '';
 
     let html = `
         <div class="panel" style="border-color:#f1c40f;">
             <h3 style="margin:0 0 8px; color:#f1c40f;">⚔️ 选择你的对手</h3>
-            <p style="margin:4px 0 12px; opacity:0.9;">第 ${G.day} 天，Boss 出现了！选择一位挑战：</p>
+            <p style="margin:4px 0 12px; opacity:0.9;">第 ${G.week} 周目 · 第 ${G.day} 天，Boss 出现了！选择一位挑战：</p>
+            ${lowHpWarn}
             <div class="story-choices">
     `;
     candidates.forEach((boss, idx) => {
         // 一句话介绍 + 简要属性
         const intro = boss.intro ? `<span style="font-weight:normal;font-size:12px;opacity:0.9;color:#ffe08a;">${boss.intro}</span><br>` : '';
-        const stats = `HP ${boss.base.maxHp} | 物攻 ${boss.base.atk} | 法攻 ${boss.base.matk} | 防御 ${boss.base.def}`;
+        const stats = `HP ${fmt(boss.base.maxHp)} | 物攻 ${fmt(boss.base.atk)} | 法攻 ${fmt(boss.base.matk)} | 防御 ${fmt(boss.base.def)}`;
         html += `<button class="btn primary" data-boss-idx="${idx}">${boss.name}<br>${intro}<span style="font-weight:normal;font-size:12px;opacity:0.75;">${stats}</span></button>`;
     });
     html += `</div></div>`;
@@ -104,18 +144,18 @@ export function triggerStory(stageIndex) {
                 const beforeMaxHp = G.player.base.maxHp;
                 const beforeMaxMp = G.player.base.maxMp;
                 choice.effect(G);
-                // 若上限提升，同步补充当前值
-                if (G.player.base.maxHp > beforeMaxHp) G.player.current.hp += G.player.base.maxHp - beforeMaxHp;
-                if (G.player.base.maxMp > beforeMaxMp) G.player.current.mp += G.player.base.maxMp - beforeMaxMp;
-                // 属性保底，避免减益把属性减成负数
+                // 上限变化时按比例同步当前值（保持血量/法力占比，避免线性膨胀）
+                if (beforeMaxHp > 0) G.player.current.hp = G.player.current.hp * (G.player.base.maxHp / beforeMaxHp);
+                if (beforeMaxMp > 0) G.player.current.mp = G.player.current.mp * (G.player.base.maxMp / beforeMaxMp);
+                // 按属性类型重新取整 + 保底（避免比例减益把属性减成负数或 0）
                 const b = G.player.base;
-                b.atk = Math.max(1, b.atk);
-                b.matk = Math.max(1, b.matk);
-                b.def = Math.max(0, b.def);
-                b.speed = Math.max(1, b.speed);
-                b.maxHp = Math.max(20, b.maxHp);
-                b.maxMp = Math.max(10, b.maxMp);
-                b.mpRegen = Math.max(0.5, b.mpRegen);
+                b.maxHp = Math.max(30, Math.round(b.maxHp));
+                b.maxMp = Math.max(15, Math.round(b.maxMp));
+                b.atk = Math.max(1, Math.round(b.atk));
+                b.matk = Math.max(1, Math.round(b.matk));
+                b.def = Math.max(0, Math.round(b.def * 10) / 10);
+                b.speed = Math.max(1, Math.round(b.speed * 10) / 10);
+                b.mpRegen = Math.max(1, Math.round(b.mpRegen * 10) / 10);
                 // HP/MP 修正到合法区间
                 G.player.current.hp = Math.max(1, Math.min(G.player.current.hp, b.maxHp));
                 G.player.current.mp = Math.max(0, Math.min(G.player.current.mp, b.maxMp));
@@ -127,11 +167,15 @@ export function triggerStory(stageIndex) {
             clearDynamicArea();
             G.day++;
             if (G.day > 30) {
-                // 如果超过30天，检查是否还有Boss未打，若有则强制触发最终Boss（阶段2）
+                // 兜底：还有 Boss 未打则强制触发最终 Boss，否则直接推进周目
                 if (!G.bossDefeated[2]) {
                     showBossSelection(2);
                 } else {
-                    endGame(true);
+                    import('./gameState.js').then(m => {
+                        m.startNextWeek();
+                        renderAll();
+                        import('./training.js').then(t => t.generateDailyTraining());
+                    });
                 }
                 return;
             }

@@ -12,23 +12,24 @@ export const ATTR_LABELS = {
     speed: '速度'
 };
 
-// 各项属性每天训练的增长范围 [min, max]
-export const GROWTH_RANGES = {
-    maxHp: [8, 18],
-    atk: [1, 4],
-    maxMp: [3, 8],
-    mpRegen: [0.4, 1.2],
-    matk: [1, 4],
-    def: [0.8, 2.2],
-    speed: [0.3, 1.0]
+// 各项属性每天训练的百分比增长 [min, max]（对当前值乘 1+pct）
+export const GROWTH_RATES = {
+    maxHp:   [0.015, 0.035],
+    atk:     [0.015, 0.035],
+    maxMp:   [0.015, 0.035],
+    mpRegen: [0.015, 0.035],
+    matk:    [0.015, 0.035],
+    def:     [0.015, 0.035],
+    speed:   [0.010, 0.025]
 };
 
 // 初始基础属性（玩家出生属性）
+// 乘法体系下 mpRegen 表示「每回合恢复 maxMp 的百分比」，6 = 6%
 export const INITIAL_BASE = {
     maxHp: 100,
     atk: 15,
     maxMp: 50,
-    mpRegen: 3,
+    mpRegen: 6,
     matk: 20,
     def: 5,
     speed: 8
@@ -105,7 +106,7 @@ export const BOSS_POOLS = [
             id: 'stone_golem',
             name: '🗿 石傀儡',
             intro: '石傀儡，防御极高但行动迟缓。',
-            base: { maxHp: 180, atk: 28, matk: 8, def: 15, speed: 3 },
+            base: { maxHp: 180, atk: 38, matk: 8, def: 15, speed: 3 },
             ai: { attack: 0.6, magic: 0, defend: 0.4 },
             passive: { type: 'defend_bonus', value: 0.2 } // 防御时额外减伤 20%
         },
@@ -188,6 +189,7 @@ export const BOSS_POOLS = [
 
 // ----- 剧情事件池（按阶段分组，stage 0: 第5天, stage 1: 第15天, stage 2: 第25天） -----
 // 每个事件：title 标题、desc 描述、choices 两个极端选项（增益+减益）
+// 效果为「按比例乘除」（无尽模式下每周目都会重复触发，固定加减会失衡）
 // 第三个选项「放弃该事件」由 story.js 自动追加，不做任何改动
 export const STORY_POOLS = [
     // 阶段 0（第5天）
@@ -196,24 +198,24 @@ export const STORY_POOLS = [
             title: '隐士的交易',
             desc: '隐居的武者愿意用残酷的秘法交换你的某种资质。',
             choices: [
-                { label: '⚔️ 狂暴之力', desc: '攻击+20，血量上限-20', effect: (G) => { G.player.base.atk += 20; G.player.base.maxHp -= 20; } },
-                { label: '🛡️ 磐石之躯', desc: '攻击-12，防御+20', effect: (G) => { G.player.base.atk -= 12; G.player.base.def += 20; } }
+                { label: '⚔️ 狂暴之力', desc: '物攻 +15%，血量上限 -10%', effect: (G) => { G.player.base.atk *= 1.15; G.player.base.maxHp *= 0.90; } },
+                { label: '🛡️ 磐石之躯', desc: '防御 +20%，物攻 -10%', effect: (G) => { G.player.base.def *= 1.20; G.player.base.atk *= 0.90; } }
             ]
         },
         {
             title: '神秘药水',
             desc: '一瓶来历不明的药水，可能脱胎换骨，也可能伤及根本。',
             choices: [
-                { label: '🔮 魔力激增', desc: '法攻+20，法力上限-20', effect: (G) => { G.player.base.matk += 20; G.player.base.maxMp -= 20; } },
-                { label: '❤️ 生命灌注', desc: '血量上限+20，法攻-12', effect: (G) => { G.player.base.maxHp += 20; G.player.base.matk -= 12; } }
+                { label: '🔮 魔力激增', desc: '法攻 +15%，法力上限 -10%', effect: (G) => { G.player.base.matk *= 1.15; G.player.base.maxMp *= 0.90; } },
+                { label: '❤️ 生命灌注', desc: '血量上限 +15%，法攻 -10%', effect: (G) => { G.player.base.maxHp *= 1.15; G.player.base.matk *= 0.90; } }
             ]
         },
         {
             title: '古战场遗骸',
             desc: '你捡到一份残破兵书与一面破损护盾，只能取其一。',
             choices: [
-                { label: '⚔️ 舍身剑术', desc: '攻击+15，防御-10', effect: (G) => { G.player.base.atk += 15; G.player.base.def -= 10; } },
-                { label: '🛡️ 铁壁心法', desc: '防御+15，攻击-10', effect: (G) => { G.player.base.def += 15; G.player.base.atk -= 10; } }
+                { label: '⚔️ 舍身剑术', desc: '物攻 +12%，防御 -8%', effect: (G) => { G.player.base.atk *= 1.12; G.player.base.def *= 0.92; } },
+                { label: '🛡️ 铁壁心法', desc: '防御 +15%，物攻 -8%', effect: (G) => { G.player.base.def *= 1.15; G.player.base.atk *= 0.92; } }
             ]
         }
     ],
@@ -223,24 +225,24 @@ export const STORY_POOLS = [
             title: '恶魔的契约',
             desc: '恶魔向你提出交易：以一项资质为代价，换取另一项极致。',
             choices: [
-                { label: '⚔️ 极致力量', desc: '攻击+25，速度-6', effect: (G) => { G.player.base.atk += 25; G.player.base.speed -= 6; } },
-                { label: '💨 极致迅捷', desc: '速度+6，攻击-25', effect: (G) => { G.player.base.speed += 6; G.player.base.atk -= 25; } }
+                { label: '⚔️ 极致力量', desc: '物攻 +20%，速度 -10%', effect: (G) => { G.player.base.atk *= 1.20; G.player.base.speed *= 0.90; } },
+                { label: '💨 极致迅捷', desc: '速度 +15%，物攻 -15%', effect: (G) => { G.player.base.speed *= 1.15; G.player.base.atk *= 0.85; } }
             ]
         },
         {
             title: '血族馈赠',
             desc: '血族贵族愿赐你力量，但总要付出点代价。',
             choices: [
-                { label: '❤️ 生命虹吸', desc: '血量上限+30，防御-12', effect: (G) => { G.player.base.maxHp += 30; G.player.base.def -= 12; } },
-                { label: '🔮 法力洪流', desc: '法力上限+30，血量上限-20', effect: (G) => { G.player.base.maxMp += 30; G.player.base.maxHp -= 20; } }
+                { label: '❤️ 生命虹吸', desc: '血量上限 +20%，防御 -10%', effect: (G) => { G.player.base.maxHp *= 1.20; G.player.base.def *= 0.90; } },
+                { label: '🔮 法力洪流', desc: '法力上限 +20%，血量上限 -10%', effect: (G) => { G.player.base.maxMp *= 1.20; G.player.base.maxHp *= 0.90; } }
             ]
         },
         {
             title: '元素试炼',
             desc: '祭坛上燃着火焰与寒冰两团元素，各附赠一份力量与代价。',
             choices: [
-                { label: '🔥 火焰精华', desc: '法攻+20，防御-10', effect: (G) => { G.player.base.matk += 20; G.player.base.def -= 10; } },
-                { label: '❄️ 寒冰精华', desc: '防御+20，法攻-10', effect: (G) => { G.player.base.def += 20; G.player.base.matk -= 10; } }
+                { label: '🔥 火焰精华', desc: '法攻 +15%，防御 -8%', effect: (G) => { G.player.base.matk *= 1.15; G.player.base.def *= 0.92; } },
+                { label: '❄️ 寒冰精华', desc: '防御 +15%，法攻 -8%', effect: (G) => { G.player.base.def *= 1.15; G.player.base.matk *= 0.92; } }
             ]
         }
     ],
@@ -250,24 +252,24 @@ export const STORY_POOLS = [
             title: '古神凝视',
             desc: '古神的残念注视着你，赐予力量的同时也在索取。',
             choices: [
-                { label: '⚔️ 泰坦之力', desc: '攻击+30，速度-8', effect: (G) => { G.player.base.atk += 30; G.player.base.speed -= 8; } },
-                { label: '💨 疾风之姿', desc: '速度+8，攻击-30', effect: (G) => { G.player.base.speed += 8; G.player.base.atk -= 30; } }
+                { label: '⚔️ 泰坦之力', desc: '物攻 +20%，速度 -12%', effect: (G) => { G.player.base.atk *= 1.20; G.player.base.speed *= 0.88; } },
+                { label: '💨 疾风之姿', desc: '速度 +18%，物攻 -15%', effect: (G) => { G.player.base.speed *= 1.18; G.player.base.atk *= 0.85; } }
             ]
         },
         {
             title: '深渊祭坛',
             desc: '祭坛流淌着暗影与圣光，两种力量只能择一。',
             choices: [
-                { label: '🌑 暗影增幅', desc: '法攻+30，血量上限-30', effect: (G) => { G.player.base.matk += 30; G.player.base.maxHp -= 30; } },
-                { label: '✨ 圣光庇护', desc: '血量上限+40，法攻-20', effect: (G) => { G.player.base.maxHp += 40; G.player.base.matk -= 20; } }
+                { label: '🌑 暗影增幅', desc: '法攻 +20%，血量上限 -12%', effect: (G) => { G.player.base.matk *= 1.20; G.player.base.maxHp *= 0.88; } },
+                { label: '✨ 圣光庇护', desc: '血量上限 +25%，法攻 -15%', effect: (G) => { G.player.base.maxHp *= 1.25; G.player.base.matk *= 0.85; } }
             ]
         },
         {
             title: '命运骰子',
             desc: '命运向你掷出骰子：押上一切，或固守本心。',
             choices: [
-                { label: '🎲 孤注一掷', desc: '攻击+20 法攻+20，防御-15', effect: (G) => { G.player.base.atk += 20; G.player.base.matk += 20; G.player.base.def -= 15; } },
-                { label: '🗿 稳如泰山', desc: '防御+25，攻击-15 法攻-15', effect: (G) => { G.player.base.def += 25; G.player.base.atk -= 15; G.player.base.matk -= 15; } }
+                { label: '🎲 孤注一掷', desc: '物攻 +15% 法攻 +15%，防御 -15%', effect: (G) => { G.player.base.atk *= 1.15; G.player.base.matk *= 1.15; G.player.base.def *= 0.85; } },
+                { label: '🗿 稳如泰山', desc: '防御 +25%，物攻 -12% 法攻 -12%', effect: (G) => { G.player.base.def *= 1.25; G.player.base.atk *= 0.88; G.player.base.matk *= 0.88; } }
             ]
         }
     ]
@@ -310,7 +312,7 @@ export const PROFESSIONS = [
         name: '✨ 牧师',
         desc: '圣光之力，持久续航。',
         mods: { matk: 0.2, mpRegen: 0.2, maxMp: 0.15 },
-        passive: '每回合恢复 6% 最大HP 与 3 MP，法术消耗 -3'
+        passive: '每回合恢复 6% 最大HP 与 6% 最大MP，法术消耗 -3'
     }
 ];
 
@@ -361,3 +363,29 @@ export const GROWTH_LEVELS = [
     { value: 2.5, label: '绝世', desc: '万中无一', weight: 1.5 },
     { value: 3.0, label: '天选', desc: '天选之子', weight: 0.5 }
 ];
+
+// ----- 难度设定 -----
+// hpMult / atkMult / defMult：Boss 属性倍率（>1 更难，atkMult 同时作用于物攻与法攻）
+// scoreMult：结算得分倍率（难度越高，同样成绩得分越高）
+// restHealMult：休息回血倍率（基础 3%，高难度下调 → 回血更慢、更难撑）
+export const DIFFICULTIES = [
+    {
+        id: 'easy', name: '🌱 轻松', desc: 'Boss 大幅弱化，休息回血更快',
+        hpMult: 0.70, atkMult: 0.70, defMult: 0.80, scoreMult: 0.6, restHealMult: 1.5
+    },
+    {
+        id: 'normal', name: '⚔️ 普通', desc: '标准体验，成长与生存压力平衡',
+        hpMult: 1.00, atkMult: 1.00, defMult: 1.00, scoreMult: 1.0, restHealMult: 1.0
+    },
+    {
+        id: 'hard', name: '🔥 困难', desc: 'Boss 全面强化，血量为真·全局资源',
+        hpMult: 1.60, atkMult: 1.35, defMult: 1.25, scoreMult: 1.8, restHealMult: 0.7
+    },
+    {
+        id: 'hell', name: '💀 地狱', desc: '每一步都是生死抉择，休息杯水车薪',
+        hpMult: 2.60, atkMult: 1.90, defMult: 1.60, scoreMult: 3.0, restHealMult: 0.4
+    }
+];
+
+// 按 id 取难度配置（未指定 / 非法 id 时回退到「普通」）
+export const getDifficulty = id => DIFFICULTIES.find(d => d.id === id) || DIFFICULTIES[1];

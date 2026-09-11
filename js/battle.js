@@ -1,19 +1,21 @@
-import { G } from './gameState.js';
-import { addLog, renderAll, clearDynamicArea } from './ui.js';
+import { G, startNextWeek } from './gameState.js';
+import { PROFESSIONS, TALENTS, getDifficulty } from './config.js';
+import { addLog, renderAll, clearDynamicArea, fmt, saveHistory } from './ui.js';
 
 // ----- 工具函数 -----
 const rand = (min, max) => Math.random() * (max - min) + min;
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
-// ----- 伤害计算 -----
+// ----- 伤害计算（尺度无关：减伤只取决于 def/atk 比值，双方同倍缩放时手感恒定）-----
+const DEF_K = 1.0;   // 调参：>1 防御更弱，<1 防御更强
 export function calcDamage(attack, defense) {
-    const reduction = defense / (defense + 100);
+    const reduction = defense / (defense + attack * DEF_K);
     let base = attack * (1 - reduction);
     const variance = 0.9 + Math.random() * 0.2;
-    return Math.max(1, Math.floor(base * variance));
+    return Math.max(1, base * variance); // 返回浮点数，应用/显示时再取整
 }
 
-// ----- 玩家进攻增益（职业 + 天赋），返回整数伤害 -----
+// ----- 玩家进攻增益（职业 + 天赋），返回浮点伤害 -----
 function applyOffensiveBuffs(damage, type) {
     const p = G.player;
     // 嗜血天赋：每损失 10% 血量，+5% 伤害
@@ -38,7 +40,7 @@ function applyOffensiveBuffs(damage, type) {
             addLog('💥 暴击！造成双倍伤害！', 'highlight');
         }
     }
-    return Math.max(1, Math.floor(damage));
+    return Math.max(1, damage); // 返回浮点数，应用时再取整
 }
 
 // ----- 玩家受击减益（职业 + 天赋），返回最终应扣 HP -----
@@ -93,11 +95,11 @@ function applyRegeneration() {
         const heal = Math.max(2, Math.floor(p.base.maxHp * 0.02));
         p.current.hp = Math.min(p.base.maxHp, p.current.hp + heal);
     }
-    // 牧师被动：每回合恢复 6% 最大HP 与 3 MP
+    // 牧师被动：每回合恢复 6% 最大HP 与 6% 最大MP
     if (p.profession === 'priest') {
         const heal = Math.max(1, Math.floor(p.base.maxHp * 0.06));
         p.current.hp = Math.min(p.base.maxHp, p.current.hp + heal);
-        p.current.mp = Math.min(p.base.maxMp, p.current.mp + 3);
+        p.current.mp = Math.min(p.base.maxMp, p.current.mp + p.base.maxMp * 0.06);
     }
     // 再生天赋：每回合恢复 5% 最大HP
     if (p.talent === 'regeneration') {
@@ -140,7 +142,7 @@ function applyEnemyPassive(enemy) {
             break;
         }
         case 'mp_regen': {
-            enemy.current.mp = Math.min(50, (enemy.current.mp || 0) + pv.value);
+            enemy.current.mp = Math.min(enemy.base.maxMp, (enemy.current.mp || 0) + pv.value);
             break;
         }
         case 'immunity_cycle': {
@@ -179,6 +181,10 @@ function tickPlayerDebuffs() {
 // ----- 战斗循环变量 -----
 let lastTimestamp = 0;
 let battleLoopId = null;
+// 僵局检测：双方血量签名长时间不变 → 提示玩家可主动结算
+let stuckTime = 0;
+let lastHpSignature = null;
+let stuckWarned = false;
 
 // ----- 开始Boss战 -----
 // export function startBossFight(index) {
@@ -244,6 +250,8 @@ export function startBossFight(bossTemplate) {
             bossBase[k] = Math.round(bossBase[k] * (0.9 + Math.random() * 0.2));
         }
     }
+    // 敌人 MP 上限（仅作展示，敌人不消耗 MP）
+    bossBase.maxMp = 50;
     const enemy = {
         name: bossTemplate.name,
         intro: bossTemplate.intro,
@@ -262,8 +270,7 @@ export function startBossFight(bossTemplate) {
     };
     G.enemy = enemy;
 
-    // 玩家满状态
-    G.player.current.hp = G.player.base.maxHp;
+    // 玩家状态：HP 是全局资源，跨战斗继承，这里不回满；MP 开局回满
     G.player.current.mp = G.player.base.maxMp;
     G.player.current.progress = 0;
     G.player.alive = true;
@@ -271,6 +278,10 @@ export function startBossFight(bossTemplate) {
     // 每场战斗重置叠层（愈战愈勇）与临时 debuff
     G.player.combatBuffs.escalationStacks = 0;
     G.player.buffs = [];
+    // 重置僵局检测
+    stuckTime = 0;
+    lastHpSignature = null;
+    stuckWarned = false;
 
     document.getElementById('enemyPanel').style.display = 'block';
     document.getElementById('enemyName').innerText = enemy.name;
@@ -285,6 +296,18 @@ export function startBossFight(bossTemplate) {
     if (battleLoopId) cancelAnimationFrame(battleLoopId);
     lastTimestamp = 0;
     battleLoopId = requestAnimationFrame(battleTick);
+}
+
+// ----- 推进到下一周目（通关第 30 天 Boss 后调用） -----
+// 保留职业/天赋/成长与已成长属性，仅重置周目进度（HP 为全局资源，跨周目继承）
+export function advanceWeek() {
+    startNextWeek();                       // week++, day=1, bossDefeated 重置（HP 不回满）
+    const clearedWeek = G.week - 1;        // startNextWeek 已自增，减 1 即刚通关的周目
+    G.phase = 'training';
+    document.getElementById('enemyPanel').style.display = 'none';
+    addLog(`🌀 恭喜通关第 ${clearedWeek} 周目！进入第 ${G.week} 周目。`, 'highlight');
+    renderAll();
+    import('./training.js').then(module => module.generateDailyTraining());
 }
 
 // ----- Boss胜利（标记阶段） -----
@@ -318,9 +341,24 @@ function endBossVictory() {
         const idx = (G.day / 10) - 1;
         if (idx >= 0 && idx < 3) G.bossDefeated[idx] = true;
     }
+    G.totalBossDefeated++;   // 累计击败数（全局统计，用于结算）
 
-    if (G.day >= 30) {
-        endGame(true);
+    // ----- 战后恢复：血量是全局资源，按已损失 HP 的比例回复 -----
+    // 第 10/20 天 Boss → 回损失生命的 20%；第 30 天 Boss → 回损失生命的 40%
+    const isFinalBoss = G.day >= 30;
+    const healRatio = isFinalBoss ? 0.40 : 0.20;
+    const lostHp = G.player.base.maxHp - G.player.current.hp;
+    if (lostHp > 0) {
+        const healAmount = Math.floor(lostHp * healRatio);
+        if (healAmount > 0) {
+            G.player.current.hp = Math.min(G.player.base.maxHp, G.player.current.hp + healAmount);
+            addLog(`💚 战后恢复 ${fmt(healAmount)} 点生命（已损失生命的 ${Math.round(healRatio * 100)}%）`, 'heal');
+        }
+    }
+
+    // 通关本周目（第 30 天 Boss）→ 进入下一周目
+    if (isFinalBoss) {
+        advanceWeek();
         return;
     }
 
@@ -328,7 +366,6 @@ function endBossVictory() {
     G.phase = 'training';
     G.enemy = null;
     document.getElementById('enemyPanel').style.display = 'none';
-    G.player.current.hp = G.player.base.maxHp;
     G.player.current.mp = G.player.base.maxMp;
     G.player.current.progress = 0;
     G.player.isDefending = false;
@@ -336,13 +373,13 @@ function endBossVictory() {
 
     G.day++;
     if (G.day > 30) {
+        // 兜底：还有 Boss 未打则交由 checkDayEvents 触发，否则直接推进周目
         if (!G.bossDefeated[2]) {
-            // 触发最终Boss选择
             import('./story.js').then(module => {
                 module.checkDayEvents(); // 会再次进入 showBossSelection
             });
         } else {
-            endGame(true);
+            advanceWeek();
         }
         return;
     }
@@ -381,6 +418,23 @@ function battleTick(timestamp) {
         } else if (G.enemy.current.progress >= 100) {
             enemyAction();
         }
+
+        // 僵局检测：任一方血量变化即重置计时（回血也算变化）
+        // 注意：上面的 enemyAction() 可能已结束战斗并清空 G.enemy，必须先判空
+        if (G.enemy && G.enemy.alive && G.player.alive) {
+            const sig = `${G.enemy.current.hp}|${G.player.current.hp}`;
+            if (sig !== lastHpSignature) {
+                lastHpSignature = sig;
+                stuckTime = 0;
+                stuckWarned = false;
+            } else {
+                stuckTime += delta;
+                if (stuckTime >= 10 && !stuckWarned) {
+                    stuckWarned = true;
+                    addLog('⏳ 战斗陷入僵局，你可以点击「🏳️ 主动结算」结束本局。', 'highlight');
+                }
+            }
+        }
     }
 
     renderAll();
@@ -415,16 +469,16 @@ export function playerAction(type) {
         damage = calcDamage(G.player.base.atk, enemy.base.def);
         damage = applyOffensiveBuffs(damage, 'physical');
         G.player.isDefending = false;
-        addLog(`⚔️ 物理攻击，造成 ${damage} 点伤害`, 'damage');
+        addLog(`⚔️ 物理攻击，造成 ${Math.floor(damage)} 点伤害`, 'damage');
     } else if (type === 'magic') {
         G.player.current.mp -= magicCost;
         // 法术无视防御
         const baseMagicDamage = G.player.base.matk * 1.2;
         const variance = 0.9 + Math.random() * 0.2;
-        damage = Math.max(1, Math.floor(baseMagicDamage * variance));
+        damage = Math.max(1, baseMagicDamage * variance);
         damage = applyOffensiveBuffs(damage, 'magic');
         G.player.isDefending = false;
-        addLog(`🔮 法术攻击，造成 ${damage} 点伤害`, 'damage');
+        addLog(`🔮 法术攻击，造成 ${Math.floor(damage)} 点伤害`, 'damage');
     } else if (type === 'defend') {
         G.player.isDefending = true;
         addLog('🛡️ 进入防御姿态', 'heal');
@@ -469,8 +523,8 @@ export function playerAction(type) {
         }
     }
 
-    // 恢复MP
-    G.player.current.mp = Math.min(G.player.base.maxMp, G.player.current.mp + G.player.base.mpRegen);
+    // 恢复MP（mpRegen 表示每回合恢复 maxMp 的百分比）
+    G.player.current.mp = Math.min(G.player.base.maxMp, G.player.current.mp + G.player.base.maxMp * (G.player.base.mpRegen / 100));
     // 回合被动恢复
     applyRegeneration();
     // 减速 debuff 回合递减
@@ -547,13 +601,13 @@ function enemyAction() {
             damage *= 2;
             addLog(`💥 ${enemy.name} 暴击！`, 'damage');
         }
-        addLog(`👹 ${enemy.name} 物理攻击，造成 ${damage} 点伤害`, 'damage');
+        addLog(`👹 ${enemy.name} 物理攻击，造成 ${Math.floor(damage)} 点伤害`, 'damage');
     } else {
         // 法术无视防御
         const baseMagicDamage = enemy.base.matk * 1.3 * boost;
         const variance = 0.9 + Math.random() * 0.2;
-        damage = Math.max(1, Math.floor(baseMagicDamage * variance));
-        addLog(`👹 ${enemy.name} 释放法术，造成 ${damage} 点伤害`, 'damage');
+        damage = Math.max(1, baseMagicDamage * variance);
+        addLog(`👹 ${enemy.name} 释放法术，造成 ${Math.floor(damage)} 点伤害`, 'damage');
     }
 
     if (damage > 0) {
@@ -594,7 +648,7 @@ function enemyAction() {
     }
 
     enemy.isDefending = false;
-    enemy.current.mp = Math.min(50, (enemy.current.mp || 0) + 1);
+    enemy.current.mp = Math.min(enemy.base.maxMp, (enemy.current.mp || 0) + 1);
     // 回合被动恢复
     applyRegeneration();
 
@@ -611,41 +665,136 @@ function endBossDefeat() {
     endGame(false);
 }
 
+// ----- 主动结算（战斗中随时可结束本局并记录成绩） -----
+export function activeSettlement() {
+    if (G.phase !== 'boss' || !G.battleActive) return;
+    if (!confirm('确定要主动结算吗？本局将立即结束，并按当前成绩记录战绩。')) return;
+    if (battleLoopId) {
+        cancelAnimationFrame(battleLoopId);
+        battleLoopId = null;
+    }
+    G.battleActive = false;
+    G.waitingForPlayer = false;
+    G.inAction = false;
+    endGame(false, 'surrender');
+}
+
 // ----- 游戏结束（结算） -----
-export function endGame(victory) {
+// resultType: 'normal'（战败/胜利）| 'surrender'（主动结算）
+export function endGame(victory, resultType = 'normal') {
     G.gameOver = true;
     G.victory = victory;
     G.phase = 'settlement';
     G.battleActive = false;
     G.waitingForPlayer = false;
+    G.inAction = false;
+    if (battleLoopId) {
+        cancelAnimationFrame(battleLoopId);
+        battleLoopId = null;
+    }
     document.getElementById('enemyPanel').style.display = 'none';
     document.getElementById('btnPhysical').disabled = true;
     document.getElementById('btnMagic').disabled = true;
     document.getElementById('btnDefend').disabled = true;
     renderAll();
 
-    const totalDays = G.day - 1;
-    const bossCount = G.bossDefeated.filter(Boolean).length;
+    // ----- 成绩统计 -----
+    const weeksCleared = G.week - 1;              // 完整通关的周目数
+    const currentDay = G.day;
+    const totalDays = Math.max(0, weeksCleared * 30 + currentDay - 1);
+    const bossCount = G.totalBossDefeated;
+    const diff = getDifficulty(G.difficulty);
+
+    // 得分 = 基础分 × 难度倍率（基础分由周目 / Boss 数 / 天数加权）
+    const baseScore = weeksCleared * 1000 + bossCount * 200 + totalDays * 5;
+    const score = Math.max(0, Math.floor(baseScore * diff.scoreMult));
+
+    // 评级由得分推导（难度已计入得分，高难度更易拿到高评级）
     let grade = 'C';
-    if (victory && bossCount === 3) grade = 'S';
-    else if (victory && bossCount === 2) grade = 'A';
-    else if (victory) grade = 'B';
+    if (score >= 17000) grade = 'SSS';
+    else if (score >= 12000) grade = 'SS';
+    else if (score >= 8000) grade = 'S';
+    else if (score >= 4500) grade = 'A';
+    else if (score >= 1500) grade = 'B';
+
+    // ----- 结果类型与标题 -----
+    const resultKind = resultType === 'surrender' ? 'surrender' : (victory ? 'victory' : 'defeat');
+    const titleMap = {
+        victory:   '🎉 无尽之路登顶！',
+        surrender: '🏳️ 你主动结束了这场冒险',
+        defeat:    '💀 无尽之路终止...'
+    };
+
+    // ----- 玩家最终数值 -----
+    const b = G.player.base;
+    const stats = [
+        { label: '血量上限', value: fmt(b.maxHp) },
+        { label: '法力上限', value: fmt(b.maxMp) },
+        { label: '物攻', value: fmt(b.atk) },
+        { label: '法攻', value: fmt(b.matk) },
+        { label: '防御', value: fmt(b.def) },
+        { label: '速度', value: fmt(b.speed) },
+        { label: '回蓝', value: b.mpRegen.toFixed(1) + '%' }
+    ];
+    const statsHtml = stats
+        .map(s => `<div class="stat-item"><span class="label">${s.label}</span><span class="value">${s.value}</span></div>`)
+        .join('');
+
+    // ----- 身份（职业 / 天赋 / 成长） -----
+    const prof = PROFESSIONS.find(p => p.id === G.player.profession);
+    const tal = TALENTS.find(t => t.id === G.player.talent);
+    const identity = [
+        prof ? `🎭 ${prof.name}` : '',
+        tal ? `✨ ${tal.name}` : '',
+        G.player.growth ? `🌱 成长 x${G.player.growth.value} · ${G.player.growth.label}` : ''
+    ].filter(Boolean).join('　');
+
+    // ----- 存入历史战绩（localStorage，最多 50 条） -----
+    saveHistory({
+        date: new Date().toLocaleString('zh-CN', { hour12: false }),
+        difficulty: diff.id,
+        difficultyName: diff.name,
+        weeksCleared,
+        totalDays,
+        bossCount,
+        score,
+        grade,
+        result: resultKind,
+        profession: prof ? prof.name : '',
+        talent: tal ? tal.name : '',
+        growth: G.player.growth ? `🌱 x${G.player.growth.value} · ${G.player.growth.label}` : '',
+        stats: {
+            maxHp: b.maxHp, maxMp: b.maxMp, atk: b.atk,
+            matk: b.matk, def: b.def, speed: b.speed
+        }
+    });
 
     const html = `
         <div class="settlement">
-            <h2>${victory ? '🎉 冒险胜利！' : '💀 冒险失败...'}</h2>
-            <p>坚持天数：${totalDays} 天</p>
-            <p>击败Boss：${bossCount} / 3</p>
-            <p>最终评分：<span class="text-gold" style="font-size:28px;">${grade}</span></p>
+            <h2>${titleMap[resultKind]}</h2>
+            <p style="margin:6px 0; font-size:17px;">
+                到达：<span class="text-gold"><b>第 ${G.week} 周目</b></span> · 第 ${currentDay} 天
+            </p>
+            <p style="margin:4px 0 4px; opacity:0.9;">难度：<b>${diff.name}</b>（得分 ×${diff.scoreMult}）</p>
+            <p style="margin:4px 0 12px; opacity:0.9;">${identity}</p>
+
+            <p style="margin:0 0 8px; opacity:0.8;">—— 最终数值 ——</p>
+            <div class="stat-grid">${statsHtml}</div>
+
+            <div style="margin-top:14px; line-height:1.9;">
+                <p style="margin:0;">完整通关：<b class="text-gold">${weeksCleared}</b> 周目</p>
+                <p style="margin:0;">累计击败 Boss：<b class="text-gold">${bossCount}</b> 个</p>
+                <p style="margin:0;">总坚持天数：<b class="text-gold">${totalDays}</b> 天</p>
+            </div>
+
+            <p style="margin:16px 0 0;">最终得分：<span class="text-gold" style="font-size:30px;">${fmt(score)}</span></p>
+            <p style="margin:2px 0 0;">最终评分：<span class="text-gold" style="font-size:34px;">${grade}</span></p>
             <button class="btn primary" id="btnRestart" style="margin-top:16px;">🔄 重新开始</button>
         </div>
     `;
     document.getElementById('dynamicArea').innerHTML = html;
     document.getElementById('btnRestart').addEventListener('click', () => {
-        import('./gameState.js').then(module => {
-            module.initGameState();
-            import('./main.js').then(m => m.restartGame());
-        });
+        import('./main.js').then(m => m.restartGame());
     });
-    addLog(`🏁 游戏结束，评分 ${grade}`, 'highlight');
+    addLog(`🏁 无尽之路结束（第 ${G.week} 周目 · ${diff.name}），得分 ${fmt(score)}，评分 ${grade}`, 'highlight');
 }

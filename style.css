@@ -191,6 +191,12 @@ body {
 .story-choices .btn {
     flex: 1 1 30%;
 }
+/* 难度选择：4 项排成 2×2 */
+.story-choices.diff-choices .btn {
+    flex: 1 1 45%;
+    text-align: center;
+    line-height: 1.6;
+}
 .settlement {
     background: #0f0f2a;
     border-radius: 18px;

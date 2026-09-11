@@ -11,7 +11,9 @@
     <!-- 头部 -->
     <div class="header">
         <span>⚔️ 勇者养成</span>
-        <span class="day-badge" id="dayDisplay">第 1 天</span>
+        <span class="day-badge" id="dayDisplay">第 1 周目 · 第 1 天</span>
+        <span id="bossCountDisplay" style="font-size:14px; color:#f1c40f;">🏆 0</span>
+        <span id="difficultyDisplay" style="font-size:14px; color:#f1c40f;"></span>
         <span id="phaseLabel" style="font-size:14px; background:#0f3460; padding:4px 14px; border-radius:40px;">训练</span>
     </div>
 
@@ -45,6 +47,10 @@
             <button class="btn success" id="btnDefend" disabled>🛡️ 防御</button>
         </div>
         <div id="extraInfo" style="font-size:13px; margin-top:6px; color:#aaa;"></div>
+        <!-- 主动结算（仅战斗进行中显示） -->
+        <div id="settleArea" style="display:none; margin-top:8px;">
+            <button class="btn" id="btnSettle" style="background:#7f1d1d;">🏳️ 主动结算</button>
+        </div>
     </div>
 
     <!-- 敌人面板（战斗中显示） -->

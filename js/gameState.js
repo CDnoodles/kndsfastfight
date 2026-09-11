@@ -27,7 +27,9 @@ export function initGameState() {
 
     G = {
         day: 1,
-        phase: 'training',
+        week: 1,                 // 当前周目（无尽模式，无上限）
+        difficulty: 'normal',    // 难度 id（见 config.js DIFFICULTIES）
+        phase: 'menu',           // 起始于主界面
         player: {
             base: { ...base },
             current: { hp: base.maxHp, mp: base.maxMp, progress: 0 },
@@ -45,7 +47,8 @@ export function initGameState() {
             }
         },
         enemy: null,
-        bossDefeated: [false, false, false],
+        bossDefeated: [false, false, false],   // 每周目内重置
+        totalBossDefeated: 0,                  // 累计击败 Boss 总数（全局统计）
         currentStage: undefined,
         gameOver: false,
         victory: false,
@@ -59,4 +62,24 @@ export function initGameState() {
 // 重置游戏（用于重新开始）
 export function resetGame() {
     initGameState();
+}
+
+// 推进到下一周目（通关第 30 天 Boss 后由 battle.js 调用）
+// 职业 / 天赋 / 成长值保留，仅重置周目内进度
+// 注意：HP 是全局资源，跨周目继承，这里不回满
+export function startNextWeek() {
+    G.week++;
+    G.day = 1;
+    G.bossDefeated = [false, false, false];
+    G.player.current.mp = G.player.base.maxMp;
+    G.player.current.progress = 0;
+    G.player.isDefending = false;
+    G.player.alive = true;
+    G.player.buffs = [];
+    G.player.combatBuffs.escalationStacks = 0;
+    G.player.talentFlags.unyieldingUsed = false;
+    G.enemy = null;
+    G.battleActive = false;
+    G.waitingForPlayer = false;
+    G.inAction = false;
 }
